@@ -1,4 +1,4 @@
-import { $, API, D, PANEL_HEADERS, LOCALE, Q_STYLE, api, bridge, cfg, color, cssVar, rulesPaused, toggleRulesPause, fillIcon, fmtDur, fmtHM, fmtMem, gotoPageRef, gpuMem, gpusOf, h, en, haptic, icon, openSheet, paceInfo, pad, pairedPcs, quotaProviders, r1, shortGpu, store, switchPc, t, tick, toast, transport, emo, labelled, rich } from '../main.js';
+import { $, API, D, PANEL_HEADERS, LOCALE, chart, fmtRate, Q_STYLE, api, bridge, cfg, color, cssVar, rulesPaused, toggleRulesPause, fillIcon, fmtDur, fmtHM, fmtMem, gotoPageRef, gpuMem, gpusOf, h, en, haptic, icon, openSheet, paceInfo, pad, pairedPcs, quotaProviders, r1, shortGpu, store, switchPc, t, tick, toast, transport, emo, labelled, rich } from '../main.js';
 import { W } from '../registry.js';
 import { canKillAnywhere, dialEl, every } from './helpers.js';
 
@@ -689,6 +689,63 @@ W.agenda = {
       }
     };
     return { update: render };
+  },
+};
+
+// Home lab: servers read by the agent from their node_exporter (Settings › General › Home lab), one card each,
+// in the same visual language as the System page: CPU with its graph, memory and disk bars, network rates.
+W.homelab = {
+  needs: ['tick'],
+  create(box, { o }) {
+    const only = String(o.hosts || '').split(',').map((x) => x.trim().toLowerCase()).filter(Boolean);
+    let data = null, at = 0, lastKey = '';
+    const grid = h('div', 'hl-grid');
+    box.append(grid);
+    const cores = (n) => (n % 10 === 1 && n % 100 !== 11 ? 'ядро' : n % 10 >= 2 && n % 10 <= 4 && (n % 100 < 12 || n % 100 > 14) ? 'ядра' : 'ядер');
+    const up = (sec) => { if (sec == null) return ''; const d = Math.floor(sec / 86400), hr = Math.floor((sec % 86400) / 3600); return d ? `up ${d} d` : `up ${hr} h`; };
+    const bar = (label, txt, pct, c) => {
+      const e = h('div', 'hl-meter', h('div', 'hl-mrow', h('span', null, label), h('span', null, txt)), h('div', 'hl-track', h('i')));
+      e.querySelector('i').style.width = Math.max(0, Math.min(100, pct)) + '%';
+      e.style.setProperty('--c', c);
+      if (pct >= 90) e.classList.add('hot');
+      return e;
+    };
+    const card = (x) => {
+      const cpuC = cssVar('--cpu'), ramC = cssVar('--ram'), netC = cssVar('--net'), upC = cssVar('--up');
+      const canvas = h('canvas', 'hl-chart');
+      const rx = fmtRate(x.rxBps), tx = fmtRate(x.txBps);
+      const head = h('div', 'hl-head', h('span', 'hl-dot' + (x.online ? '' : ' off')), h('b', null, x.name),
+        h('span', 'hl-sub', [x.os, x.online ? up(x.uptimeSec) : (x.error || 'нет связи')].filter(Boolean).join(' · ')),
+        h('span', 'hl-chips', [x.tempC != null ? `${x.tempC}°C` : '', x.load1 != null ? `LA ${x.load1}` : ''].filter(Boolean).join(' · ')));
+      const cpu = h('div', 'hl-cpu', h('span', 'hl-k', 'CPU'), h('b', null, x.cpuPct != null ? String(Math.round(x.cpuPct)) : '—'), h('small', null, '%'),
+        h('span', 'hl-cores', x.cpus ? `${x.cpus} ${cores(x.cpus)}` : ''));
+      cpu.style.setProperty('--c', cpuC);
+      const rows = [];
+      if (x.memTotalGb) rows.push(bar('RAM', `${x.memUsedGb} / ${Math.round(x.memTotalGb)} GB`, (x.memUsedGb / x.memTotalGb) * 100, ramC));
+      const gb = (v) => (v >= 1000 ? `${(v / 1024).toFixed(1)} TB` : `${Math.round(v)} GB`);
+      for (const d of x.disks || []) {
+        const pct = (d.usedGb / d.totalGb) * 100;
+        rows.push(bar(d.mount === '/' ? 'Диск /' : d.mount, `${gb(d.usedGb)} / ${gb(d.totalGb)} · ${Math.round(pct)}%`, pct, '#94a3b8'));
+      }
+      const net = h('div', 'hl-net', h('span', null, '↓ ', h('b', null, rx[0]), ' ' + rx[1]), h('span', null, '↑ ', h('b', null, tx[0]), ' ' + tx[1]));
+      net.firstChild.style.color = netC; net.lastChild.style.color = upC;
+      const el = h('div', 'hl-card' + (x.online ? '' : ' offline'), head, cpu, canvas, ...rows, net);
+      requestAnimationFrame(() => chart(canvas, [{ data: x.cpuHist || [], color: cpuC, max: 100 }], { grid: true }));
+      return el;
+    };
+    const render = () => {
+      if (!data) { grid.replaceChildren(h('div', 'empty', t('w.loading'))); return; }
+      const hosts = (data.hosts || []).filter((x) => !only.length || only.includes(String(x.name).toLowerCase()));
+      const key = JSON.stringify([hosts.map((x) => [x.updated, x.online]), box.clientWidth, box.clientHeight]);
+      if (key === lastKey) return;
+      lastKey = key;
+      if (!hosts.length) { grid.replaceChildren(h('div', 'empty', 'Добавьте серверы в Настройки › General › Home lab')); return; }
+      grid.style.setProperty('--n', Math.min(hosts.length, 3));
+      grid.replaceChildren(...hosts.map(card));
+    };
+    const load = async () => { try { data = await api('/homelab'); } catch (_) {} at = Date.now(); render(); };
+    load();
+    return { update() { if (Date.now() - at > 10_000) load(); else render(); } };
   },
 };
 

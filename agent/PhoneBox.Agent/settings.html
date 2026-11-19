@@ -586,6 +586,13 @@ nav a.on::before { color: var(--accent); }
         <button class="btn sm" id="calAdd" data-i18n="s.calendars.add">＋ Add a calendar</button>
       </div>
 
+      <div class="card" id="labCard">
+        <h3 data-i18n="s.lab.title">Home lab</h3>
+        <p class="hint" style="margin:0 0 12px" data-i18n-html="s.lab.hint">Servers for the <b>Home lab</b> widget: the address of each server's Prometheus <code>node_exporter</code>, e.g. <code>http://100.64.0.10:9100</code> over Tailscale. The agent reads them every 10 seconds while the widget is on an enabled page; the addresses stay on this computer.</p>
+        <div id="labList"></div>
+        <button class="btn sm" id="labAdd" data-i18n="s.lab.add">＋ Add a server</button>
+      </div>
+
       <div class="card" id="gcalCard">
         <h3 data-i18n="s.gcal.title">Google Calendar (sign in)</h3>
         <p class="hint" style="margin:0 0 12px" data-i18n-html="s.gcal.hint">For Google Workspace calendars whose secret iCal address is turned off. Create an OAuth client of type <b>Desktop app</b> in your own Google Cloud project (Google Calendar API enabled), paste its ID and secret, save, then <b>Connect</b>. Sign-in tokens stay on this computer.</p>
@@ -2223,6 +2230,17 @@ $('cameraAdd').onclick = () => {
   cfg.cameras.sources.push({ id: cameraId(), name: '', url: '', transport: 'tcp', fps: 5 });
   renderCameras(); changed();
 };
+// ---------------------------------------------------------------- Home lab servers
+function renderHomelab() {
+  cfg.homelab ??= { hosts: [] };
+  cfg.homelab.hosts ??= [];
+  $('labList').replaceChildren(...cfg.homelab.hosts.map((x, i) => h('div', { class: 'cal-row' },
+    h('input', { type: 'text', value: x.name || '', placeholder: 'pve', oninput: (e) => { x.name = e.target.value; changed(); } }),
+    h('input', { type: 'text', class: 'cal-url', value: x.url || '', placeholder: 'http://100.64.0.10:9100', spellcheck: 'false',
+      oninput: (e) => { x.url = e.target.value.trim(); changed(); } }),
+    h('button', { class: 'btn sm danger', onclick: () => { cfg.homelab.hosts.splice(i, 1); renderHomelab(); changed(); } }, t('s.js.remove')))));
+}
+$('labAdd').onclick = () => { cfg.homelab ??= { hosts: [] }; cfg.homelab.hosts.push({ name: '', url: '' }); renderHomelab(); changed(); };
 // ---------------------------------------------------------------- Google Calendar (OAuth)
 function renderGoogleCalendar() {
   const g = (cfg.googleCalendar ??= { enabled: false, clientId: '', clientSecret: '', calendarIds: ['primary'], name: 'Google', color: '#60a5fa' });
@@ -3268,7 +3286,7 @@ async function load() {
   // in English that has display.language = "vi" would otherwise render every editor in English and never rebuild them
   if (window.PhoneBoxI18n) applyLanguageUi(cfg.display?.language || 'auto');
   else localizeCatalog();
-  renderPages(); renderDeck(); renderRules(); renderCalendars(); renderGoogleCalendar(); renderFeeds(); renderCameras(); renderConsole(); renderNetAdapters(); renderCharge(); bindForm();
+  renderPages(); renderDeck(); renderRules(); renderCalendars(); renderGoogleCalendar(); renderHomelab(); renderFeeds(); renderCameras(); renderConsole(); renderNetAdapters(); renderCharge(); bindForm();
   // the editors fill in the sections and fields they own (feeds, cameras, an action's "enabled", ...), so the
   // baseline is taken after they ran: otherwise a freshly loaded page already counts as unsaved, and Revert can never
   // get back to a clean state
@@ -3307,7 +3325,7 @@ async function doSave() {
 }
 
 $('save').onclick = save;
-$('revert').onclick = () => { cfg = JSON.parse(saved); renderPages(); renderDeck(); renderRules(); renderCalendars(); renderGoogleCalendar(); renderFeeds(); renderCameras(); renderConsole(); renderNetAdapters(); renderPhones(); renderCharge(); bindForm(); changed(); };
+$('revert').onclick = () => { cfg = JSON.parse(saved); renderPages(); renderDeck(); renderRules(); renderCalendars(); renderGoogleCalendar(); renderHomelab(); renderFeeds(); renderCameras(); renderConsole(); renderNetAdapters(); renderPhones(); renderCharge(); bindForm(); changed(); };
 // Over USB this also wakes the phone and brings the panel to the front (adb); over Wi-Fi the phone switches to the
 // page selected in the editor through the live stream.
 $('openPhone').onclick = async () => {
@@ -3406,7 +3424,7 @@ $('applyJson').onclick = () => {
     cfg = c;
     fillDefaults();
     $('jsonErr').textContent = '';
-    renderPages(); renderDeck(); renderRules(); renderCalendars(); renderGoogleCalendar(); renderFeeds(); renderCameras(); renderConsole(); renderNetAdapters(); renderPhones(); renderCharge(); bindForm(); changed(); toast(t('s.jsonLoaded'));
+    renderPages(); renderDeck(); renderRules(); renderCalendars(); renderGoogleCalendar(); renderHomelab(); renderFeeds(); renderCameras(); renderConsole(); renderNetAdapters(); renderPhones(); renderCharge(); bindForm(); changed(); toast(t('s.jsonLoaded'));
   }
   catch (e) { $('jsonErr').textContent = e.message; }
 };

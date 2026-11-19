@@ -31,6 +31,8 @@ public sealed class AgentConfig
     public List<CalendarSource> Calendars { get; set; } = [];
     /// <summary>Google Calendar through the Calendar API (own OAuth client); tokens live in a separate file.</summary>
     public GoogleCalendarConfig GoogleCalendar { get; set; } = new();
+    /// <summary>Home lab servers (node_exporter) for the Home lab widget; the addresses never go to the phone.</summary>
+    public HomelabConfig Homelab { get; set; } = new();
     /// <summary>RSS and Atom feeds for the Feeds widget; like the calendars, the addresses never go to the phone.</summary>
     public List<FeedSource> Feeds { get; set; } = [];
     /// <summary>The Photo frame widget's folder; like the feeds, it never goes to the phone.</summary>

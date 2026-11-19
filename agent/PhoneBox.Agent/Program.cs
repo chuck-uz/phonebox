@@ -86,6 +86,7 @@ AddMonitor<SessionLockMonitor>(builder.Services);
 AddMonitor<UpdateService>(builder.Services);
 AddMonitor<PrivacyMonitor>(builder.Services);
 AddMonitor<CalendarMonitor>(builder.Services);
+AddMonitor<HomelabMonitor>(builder.Services);
 AddMonitor<DockerMonitor>(builder.Services);
 AddMonitor<ObsMonitor>(builder.Services);
 AddMonitor<DiscordMonitor>(builder.Services);
@@ -496,6 +497,8 @@ object State(IServiceProvider sp, long? ev)
 
 // Upcoming calendar events (Agenda widget); the feed URLs stay here.
 app.MapGet("/api/calendar", (CalendarMonitor cal) => Results.Json(cal.Snapshot()));
+// Home lab servers (node_exporter) for the Home lab widget; the scrape addresses stay here.
+app.MapGet("/api/homelab", (HomelabMonitor lab) => Results.Json(new { hosts = lab.Snapshot(), intervalSec = HomelabMonitor.IntervalSec }));
 // Google Calendar sign-in (local only: /api/google-calendar is not in the Wi-Fi allow list, unlike /api/calendar)
 app.MapGet("/api/google-calendar/state", (GoogleCalendar g) => Results.Json(g.Status()));
 app.MapGet("/api/google-calendar/connect", (GoogleCalendar g) =>
