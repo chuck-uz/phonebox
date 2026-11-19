@@ -34,10 +34,13 @@ public static class ClaudeHook
         var question = tool == "AskUserQuestion";
         var a = new Approval(ApprovalStore.NewId(), "Claude Code", sessionId, project, ToolTitle(tool), question ? QuestionDetail(ti) : Detail(tool, ti),
             ti.ValueKind == JsonValueKind.Object ? Str(ti, "description") : null, now, now + Math.Clamp(c.TimeoutSec, 10, 3600) * 1000L,
-            question ? "question" : "permission");
+            question ? "question" : "permission", question ? Questions(ti) : null);
 
-        var decision = await approvals.AskAsync(a, aborted);
+        var (decision, answers) = await approvals.AskForAnswersAsync(a, aborted);
         if (decision is null or "skip") return null; // no decision: Claude Code asks in the terminal as usual
+        // A question answered on the phone: allow it with the original questions plus the answers, keyed by question
+        // text (Claude Code's documented way for a hook to answer AskUserQuestion).
+        if (decision == "answer" && answers is not null && question) return AnswerOutput(ti, answers);
         return new
         {
             hookSpecificOutput = new
@@ -86,6 +89,41 @@ public static class ClaudeHook
         if (tool is "Edit" && s is not null && Str(ti, "new_string") is { } ns) s += "\n\n" + Head(ns, 12);
         s ??= JsonSerializer.Serialize(ti, new JsonSerializerOptions { WriteIndented = true });
         return s.Length > 3000 ? s[..3000] + "…" : s;
+    }
+
+    /// <summary>The hook output that answers AskUserQuestion: allow, with the tool input and an answers object added.</summary>
+    internal static object AnswerOutput(JsonElement toolInput, IReadOnlyDictionary<string, string> answers)
+    {
+        var updated = JsonNode.Parse(toolInput.GetRawText())!.AsObject();
+        var obj = new JsonObject();
+        foreach (var (q, v) in answers) obj[q] = v;
+        updated["answers"] = obj;
+        return new
+        {
+            hookSpecificOutput = new
+            {
+                hookEventName = "PermissionRequest",
+                decision = new { behavior = "allow", updatedInput = updated },
+            },
+        };
+    }
+
+    /// <summary>The questions with their choices for the phone; null when the input has none it can show.</summary>
+    internal static IReadOnlyList<ApprovalQuestion>? Questions(JsonElement ti)
+    {
+        if (ti.ValueKind != JsonValueKind.Object || !ti.TryGetProperty("questions", out var qs) || qs.ValueKind != JsonValueKind.Array) return null;
+        var list = new List<ApprovalQuestion>();
+        foreach (var q in qs.EnumerateArray())
+        {
+            if (q.ValueKind != JsonValueKind.Object || Str(q, "question") is not { Length: > 0 } text) return null;
+            var opts = new List<ApprovalOption>();
+            if (q.TryGetProperty("options", out var os) && os.ValueKind == JsonValueKind.Array)
+                foreach (var o in os.EnumerateArray())
+                    if (o.ValueKind == JsonValueKind.Object && Str(o, "label") is { Length: > 0 } label) opts.Add(new(label, Str(o, "description")));
+            if (opts.Count == 0) return null;
+            list.Add(new(text, Str(q, "header"), q.TryGetProperty("multiSelect", out var m) && m.ValueKind == JsonValueKind.True, opts));
+        }
+        return list.Count > 0 ? list : null;
     }
 
     /// <summary>The questions and their choices as plain text: "Header: Question" and one line per choice.</summary>

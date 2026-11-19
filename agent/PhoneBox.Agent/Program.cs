@@ -754,7 +754,15 @@ app.MapGet("/api/work/conversation", (string id, ConfigStore cfg, SessionMonitor
 
 // Permission prompts waiting for the phone (posted by the Claude Code hook, see ClaudeHook.cs).
 app.MapGet("/api/approvals", (ApprovalStore a) => Results.Json(new { items = a.Snapshot() }));
-app.MapPost("/api/approvals/{id}", (string id, string decision, ApprovalStore a) => a.Decide(id, decision) ? Results.Ok() : Results.NotFound());
+// answers come as ?answers= (JSON object, question text -> label): the phone's WebView proxy cannot forward a body
+app.MapPost("/api/approvals/{id}", (string id, string decision, string? answers, ApprovalStore a) =>
+{
+    Dictionary<string, string>? parsed = null;
+    if (!string.IsNullOrEmpty(answers))
+        try { parsed = System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, string>>(answers); }
+        catch (System.Text.Json.JsonException) { return Results.BadRequest(); }
+    return a.Decide(id, decision, parsed) ? Results.Ok() : Results.NotFound();
+});
 
 // Spectrum bars widget: each call keeps audio capture running for a few seconds and returns the latest bands
 // (the live stream also sends them as "spectrum" events; panels without the stream poll this instead).

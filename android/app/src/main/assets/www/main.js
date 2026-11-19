@@ -1126,18 +1126,25 @@ export function renderApproval() {
     buzz('0,120,80,120,80,240');
     // A prompt whose answer is still in flight comes back locked: it can be shown again while its own post runs.
     $('apAllow').disabled = $('apDeny').disabled = $('apSkip').disabled = submitting.has(a.id);
+    renderChoices(a);
   }
   // A question from Claude is answered at the PC (the terminal shows it); the phone only tells you it is waiting.
   const asking = a.kind === 'question';
+  const answerable = asking && Array.isArray(a.questions) && a.questions.length > 0;
   $('apAllow').hidden = $('apDeny').hidden = asking;
   $('apSkip').hidden = !asking;
+  $('apSkip').textContent = t(answerable ? 'panel.answerOnPc' : 'panel.gotIt');
+  $('apSkip').classList.toggle('allow', !answerable);
+  $('apAnswer').hidden = !answerable;
+  $('apChoices').hidden = !answerable;
   $('apSource').textContent = a.source || 'Claude Code';
   $('apProject').textContent = a.project || a.session || '';
   $('apCount').textContent = approvals.length > 1 ? t('panel.oneOfN', { n: approvals.length }) : '';
   $('apTool').textContent = a.tool;
   $('apDesc').textContent = a.description || '';
   $('apDetail').textContent = a.detail || '';
-  $('apDetail').hidden = !a.detail;
+  $('apDetail').hidden = !a.detail || answerable;
+  $('apAnswer').disabled = submitting.has(a.id) || !answerable || !a.questions.every((q) => (picks[q.question] || []).length > 0);
   box.hidden = false;
   tickApproval();
 }
@@ -1146,7 +1153,7 @@ export function tickApproval() {
   const a = approvals[0];
   if (!a || $('approval').hidden) return;
   const left = a.expiresAt - Date.now();
-  $('apTime').textContent = a.kind === 'question' ? t('panel.answerInTerminal')
+  $('apTime').textContent = a.kind === 'question' ? t(a.questions?.length ? 'panel.answerHereOrPc' : 'panel.answerInTerminal')
     : left > 0 ? t('panel.askedInTerminalIn', { time: fmtTime(left) }) : t('panel.askingInTerminal');
   if (left < -3000) { approvals.shift(); renderApproval(); }
 }
@@ -1158,17 +1165,51 @@ setInterval(tickApproval, 1000);
 // screen: the answer is needed when someone is looking, and a phone in a pocket should not poll all night.
 setInterval(() => { if (!PREVIEW && !idle()) loadApprovals(); }, 5000);
 
+// Choices of an AskUserQuestion: one group per question; a single-choice question keeps one pick, a multi-choice one
+// toggles. The picks belong to the prompt on screen and survive the re-renders of the list poll.
+let picks = {};
+function renderChoices(a) {
+  picks = {};
+  const box = $('apChoices');
+  if (a.kind !== 'question' || !Array.isArray(a.questions) || !a.questions.length) { box.replaceChildren(); return; }
+  box.replaceChildren(...a.questions.map((q) => {
+    const opts = h('div', 'ap-opts');
+    const group = h('div', 'ap-q', h('div', 'ap-qtext', q.header ? h('span', 'ap-qhead', q.header) : '', q.question,
+      q.multiSelect ? h('span', 'ap-qmulti', ' · ' + t('panel.pickSeveral')) : ''), opts);
+    for (const o of q.options) {
+      const b = h('button', 'ap-opt', h('b', null, o.label), o.description ? h('small', null, o.description) : '');
+      b.addEventListener('click', () => {
+        haptic();
+        const cur = picks[q.question] || [];
+        picks[q.question] = q.multiSelect ? (cur.includes(o.label) ? cur.filter((x) => x !== o.label) : [...cur, o.label]) : [o.label];
+        for (const x of opts.children) x.classList.toggle('on', picks[q.question].includes(x.firstChild.textContent));
+        renderApproval();
+      });
+      opts.append(b);
+    }
+    return group;
+  }));
+}
+
 export async function decide(decision) {
   const a = approvals[0];
   if (!a || submitting.has(a.id)) return;
+  let query = `decision=${decision}`;
+  if (decision === 'answer') {
+    // keep the order of the choices as Claude listed them; several are joined with ", " as Claude Code expects
+    const answers = Object.fromEntries((a.questions || []).map((q) => [q.question, q.options.map((o) => o.label).filter((l) => (picks[q.question] || []).includes(l)).join(', ')]));
+    if (Object.values(answers).some((v) => !v)) return;
+    query += '&answers=' + encodeURIComponent(JSON.stringify(answers));
+  }
   haptic();
   submitting.add(a.id);
-  $('apAllow').disabled = $('apDeny').disabled = $('apSkip').disabled = true;
+  $('apAllow').disabled = $('apDeny').disabled = $('apSkip').disabled = $('apAnswer').disabled = true;
   let accepted = false;
   try {
-    await api(`/approvals/${encodeURIComponent(a.id)}?decision=${decision}`, 'POST', 4000);
+    await api(`/approvals/${encodeURIComponent(a.id)}?${query}`, 'POST', 4000);
     accepted = true;
-    if (decision === 'skip') toast(t('panel.questionWaiting'), 'warn');
+    if (decision === 'answer') toast(t('panel.answered'), 'ok');
+    else if (decision === 'skip') toast(t('panel.questionWaiting'), 'warn');
     else toast(t(decision === 'allow' ? 'panel.allowedTool' : 'panel.deniedTool', { tool: a.tool }), decision === 'allow' ? 'ok' : 'err');
   } catch (_) { toast(t('panel.alreadyAnswered'), 'warn'); }
   finally { submitting.delete(a.id); }
@@ -1180,6 +1221,7 @@ export async function decide(decision) {
     // answer go out for a prompt whose own post is still running.
     if (approvals[0] && approvals[0].id === a.id) {
       $('apAllow').disabled = $('apDeny').disabled = $('apSkip').disabled = false;
+      renderApproval();
     }
     return;
   }
@@ -1191,6 +1233,7 @@ export async function decide(decision) {
 $('apAllow').addEventListener('click', () => decide('allow'));
 $('apDeny').addEventListener('click', () => decide('deny'));
 $('apSkip').addEventListener('click', () => decide('skip'));
+$('apAnswer').addEventListener('click', () => decide('answer'));
 
 export function handleEvent(e) {
   if (PREVIEW && (e.kind === 'goto' || e.kind === 'back' || e.kind === 'reload')) return; // the editor picks the page
