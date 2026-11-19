@@ -1140,7 +1140,7 @@ export function renderApproval() {
   $('apSource').textContent = a.source || 'Claude Code';
   $('apProject').textContent = a.project || a.session || '';
   $('apCount').textContent = approvals.length > 1 ? t('panel.oneOfN', { n: approvals.length }) : '';
-  $('apTool').textContent = a.tool;
+  $('apTool').textContent = toolTitle(a.tool);
   $('apDesc').textContent = a.description || '';
   $('apDetail').textContent = a.detail || '';
   $('apDetail').hidden = !a.detail || answerable;
@@ -1164,6 +1164,18 @@ setInterval(tickApproval, 1000);
 // on screen, so ask for the list outright as well instead of relying on the event alone. Only while the panel is on
 // screen: the answer is needed when someone is looking, and a phone in a pocket should not poll all night.
 setInterval(() => { if (!PREVIEW && !idle()) loadApprovals(); }, 5000);
+
+// The agent names the action in English ("Run a command", "Use github › create_issue"); the panel shows it in the
+// panel's language, with the tool or server name itself left as it is.
+const TOOL_TITLES = { 'Run a command': 'panel.tt.run', 'Edit a file': 'panel.tt.edit', 'Write a file': 'panel.tt.write',
+  'Edit a notebook': 'panel.tt.notebook', 'Fetch a web page': 'panel.tt.fetch', 'Search the web': 'panel.tt.search',
+  'Read a file': 'panel.tt.read', 'Claude has a question': 'panel.tt.question' };
+function toolTitle(s) {
+  if (TOOL_TITLES[s]) { const v = t(TOOL_TITLES[s]); return v === TOOL_TITLES[s] ? s : v; }
+  const m = /^Use (.+)$/.exec(s || '');
+  if (m) { const v = t('panel.tt.use', { tool: m[1] }); return v === 'panel.tt.use' ? s : v; }
+  return s;
+}
 
 // Choices of an AskUserQuestion: one group per question; a single-choice question keeps one pick, a multi-choice one
 // toggles. The picks belong to the prompt on screen and survive the re-renders of the list poll.

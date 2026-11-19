@@ -96,11 +96,24 @@ public sealed class ApprovalStore(PushStore events, ILogger<ApprovalStore> log)
         foreach (var q in qs)
         {
             if (!answers.TryGetValue(q.Question, out var v) || string.IsNullOrWhiteSpace(v)) return false;
-            var picked = v.Split(", ");
-            if (!q.MultiSelect && picked.Length != 1) return false;
-            if (picked.Any(l => q.Options.All(o => o.Label != l)) || picked.Distinct().Count() != picked.Length) return false;
+            var labels = q.Options.Select(o => o.Label).ToList();
+            // a label may itself contain ", " ("Yes, keep it"): a whole label is one pick, never split
+            if (labels.Contains(v)) continue;
+            if (!q.MultiSelect || SplitLabels(v, labels) is not { } picked || picked.Distinct().Count() != picked.Count) return false;
         }
         return true;
+    }
+
+    /// <summary>The labels a multi-choice answer is made of, joined by ", ", or null when it is not made of them only.</summary>
+    private static List<string>? SplitLabels(string v, IReadOnlyList<string> labels)
+    {
+        if (v.Length == 0) return [];
+        foreach (var l in labels.OrderByDescending(l => l.Length))
+        {
+            if (v == l) return [l];
+            if (v.StartsWith(l + ", ", StringComparison.Ordinal) && SplitLabels(v[(l.Length + 2)..], labels) is { } rest) return [l, .. rest];
+        }
+        return null;
     }
 
     public static string NewId() => Convert.ToHexString(System.Security.Cryptography.RandomNumberGenerator.GetBytes(6)).ToLowerInvariant();

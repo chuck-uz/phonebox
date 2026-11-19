@@ -56,6 +56,19 @@ public sealed class QuestionAnswerTests : IDisposable
         Assert.Equal(valid, ApprovalStore.ValidAnswers(Qs(), JsonSerializer.Deserialize<Dictionary<string, string>>(json)));
 
     [Fact]
+    public void A_choice_with_a_comma_in_its_label_is_one_pick()
+    {
+        IReadOnlyList<ApprovalQuestion> qs =
+        [
+            new("Keep it?", null, false, [new("Yes, keep it", null), new("No", null)]),
+            new("Which?", null, true, [new("A, B", null), new("C", null)]),
+        ];
+        Assert.True(ApprovalStore.ValidAnswers(qs, new Dictionary<string, string> { ["Keep it?"] = "Yes, keep it", ["Which?"] = "A, B, C" }));
+        Assert.True(ApprovalStore.ValidAnswers(qs, new Dictionary<string, string> { ["Keep it?"] = "No", ["Which?"] = "A, B" }));
+        Assert.False(ApprovalStore.ValidAnswers(qs, new Dictionary<string, string> { ["Keep it?"] = "Yes, No", ["Which?"] = "C" }));
+    }
+
+    [Fact]
     public async Task An_answer_from_the_phone_reaches_the_waiting_hook()
     {
         var store = new ApprovalStore(_events, NullLogger<ApprovalStore>.Instance);
