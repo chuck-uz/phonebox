@@ -61,6 +61,7 @@ builder.Services.AddSingleton<AppCatalog>();
 builder.Services.AddSingleton(_ => new ShortcutIconUploads(Path.Combine(configDir, "icons")));
 builder.Services.AddSingleton<PairingCodes>();
 builder.Services.AddSingleton<SpotifyControl>();
+builder.Services.AddSingleton<GoogleCalendar>();
 builder.Services.AddSingleton<ControlDeck>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<ControlDeck>());
 builder.Services.AddSingleton<PushStore>();
@@ -221,7 +222,9 @@ app.Use(async (ctx, next) =>
     {
         var host = ctx.Request.Host.Host;
         var spotifyCallback = ctx.Request.Method == "GET" && ctx.Request.Path == "/api/controls/spotify/callback"
-            && app.Services.GetRequiredService<SpotifyControl>().HasPendingState(ctx.Request.Query["state"]);
+            && app.Services.GetRequiredService<SpotifyControl>().HasPendingState(ctx.Request.Query["state"])
+            || ctx.Request.Method == "GET" && ctx.Request.Path == "/api/google-calendar/callback"
+            && app.Services.GetRequiredService<GoogleCalendar>().HasPendingState(ctx.Request.Query["state"]);
         if ((host != "127.0.0.1" && host != "localhost") || (origin != "" && !SameOrigins.Contains(origin))
             || (!spotifyCallback && BrowserGuard.IsForeign(ctx.Request.Headers["Sec-Fetch-Site"], ctx.Request.Headers["Sec-Fetch-Mode"], ctx.Request.Method, ctx.Request.Path)))
         {
@@ -493,6 +496,23 @@ object State(IServiceProvider sp, long? ev)
 
 // Upcoming calendar events (Agenda widget); the feed URLs stay here.
 app.MapGet("/api/calendar", (CalendarMonitor cal) => Results.Json(cal.Snapshot()));
+// Google Calendar sign-in (local only: /api/google-calendar is not in the Wi-Fi allow list, unlike /api/calendar)
+app.MapGet("/api/google-calendar/state", (GoogleCalendar g) => Results.Json(g.Status()));
+app.MapGet("/api/google-calendar/connect", (GoogleCalendar g) =>
+{ try { return Results.Json(new { url = g.Begin(), redirectUri = g.RedirectUri }); } catch (InvalidOperationException ex) { return Results.BadRequest(new { error = ex.Message }); } });
+app.MapPost("/api/google-calendar/disconnect", async (GoogleCalendar g, CancellationToken ct) => { await g.Disconnect(ct); return Results.Ok(); });
+app.MapGet("/api/google-calendar/callback", async (string? state, string? code, string? error, GoogleCalendar g, CancellationToken ct) =>
+{
+    if (error is not null) return Results.Text($"Google sign-in was not completed ({error}). Start again from PhoneBox settings.", "text/plain", statusCode: 400);
+    try
+    {
+        return state is not null && code is not null && await g.Complete(state, code, ct)
+            ? Results.Text("Google Calendar connected. Return to PhoneBox settings; this tab can be closed.", "text/plain")
+            : Results.Text("Google sign-in expired or was refused. Start again from PhoneBox settings.", "text/plain", statusCode: 400);
+    }
+    catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or HttpRequestException or System.Text.Json.JsonException)
+    { return Results.Text("Google sign-in failed: " + ex.Message, "text/plain", statusCode: 400); }
+});
 
 // Headlines for the Feeds widget; the feed and article addresses stay here, the phone opens an article by its id.
 app.MapGet("/api/feeds", (FeedMonitor feeds) =>

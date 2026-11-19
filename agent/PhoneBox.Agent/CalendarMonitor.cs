@@ -14,8 +14,9 @@ public sealed record CalendarSnapshot(IReadOnlyList<CalendarEvent> Events, long 
 /// Recurring events are expanded for the usual rules (daily / weekly / monthly / yearly, INTERVAL, COUNT, UNTIL,
 /// BYDAY, EXDATE, moved occurrences via RECURRENCE-ID).
 /// </summary>
-public sealed class CalendarMonitor(ConfigStore config, ILogger<CalendarMonitor> log) : BackgroundService
+public sealed class CalendarMonitor(ConfigStore config, ILogger<CalendarMonitor> log, GoogleCalendar? google = null) : BackgroundService
 {
+    private const string GoogleKey = "google-calendar:";
     private const int DaysAhead = 14;
     private static readonly HttpClient Http = new() { Timeout = TimeSpan.FromSeconds(20) };
     private volatile CalendarSnapshot _snap = new([], 0, []);
@@ -31,7 +32,9 @@ public sealed class CalendarMonitor(ConfigStore config, ILogger<CalendarMonitor>
         while (!ct.IsCancellationRequested)
         {
             var sources = config.Get().Calendars.Where(c => !string.IsNullOrWhiteSpace(c.Url)).ToList();
-            var key = string.Join("|", sources.Select(s => s.Url + s.Name + s.Color));
+            var g = config.Get().GoogleCalendar;
+            var key = string.Join("|", sources.Select(s => s.Url + s.Name + s.Color))
+                + (google is null ? "" : $"|g:{g.Enabled}:{g.ClientId}:{g.Name}:{g.Color}:{string.Join(',', g.CalendarIds)}:{google.Generation}");
             // every 10 minutes, right after the calendars change, and on /api/refresh
             if (key != _sourcesKey || DateTime.UtcNow >= next || Wake.Count != wakes)
             {
@@ -71,9 +74,25 @@ public sealed class CalendarMonitor(ConfigStore config, ILogger<CalendarMonitor>
                 if (_lastGood.TryGetValue(src.Url, out var last)) events.AddRange(last);
             }
         }
-        foreach (var gone in _lastGood.Keys.Except(sources.Select(s => s.Url)).ToList()) _lastGood.Remove(gone);
+        var useGoogle = google is not null && config.Get().GoogleCalendar.Enabled && google.Connected;
+        if (useGoogle)
+        {
+            var gName = config.Get().GoogleCalendar.Name is { Length: > 0 } n ? n : "Google";
+            try
+            {
+                var fresh = await google!.Events(from, to, ct);
+                _lastGood[GoogleKey] = fresh;
+                events.AddRange(fresh);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
+            {
+                errors.Add($"{gName}: {ex.Message}");
+                if (_lastGood.TryGetValue(GoogleKey, out var last)) events.AddRange(last);
+            }
+        }
+        foreach (var gone in _lastGood.Keys.Except(sources.Select(s => s.Url).Append(useGoogle ? GoogleKey : "")).ToList()) _lastGood.Remove(gone);
         _snap = new(events.OrderBy(e => e.Start).ThenBy(e => e.Title).ToList(), DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(), errors);
-        if (sources.Count > 0) log.LogInformation("calendars: {Count} events{Errors}", events.Count, errors.Count > 0 ? "; " + string.Join("; ", errors) : "");
+        if (sources.Count > 0 || useGoogle) log.LogInformation("calendars: {Count} events{Errors}", events.Count, errors.Count > 0 ? "; " + string.Join("; ", errors) : "");
     }
 
     /// <summary>The event happening now (not all-day), if any, optionally only those whose title contains one of the names.</summary>

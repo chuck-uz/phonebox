@@ -586,6 +586,23 @@ nav a.on::before { color: var(--accent); }
         <button class="btn sm" id="calAdd" data-i18n="s.calendars.add">＋ Add a calendar</button>
       </div>
 
+      <div class="card" id="gcalCard">
+        <h3 data-i18n="s.gcal.title">Google Calendar (sign in)</h3>
+        <p class="hint" style="margin:0 0 12px" data-i18n-html="s.gcal.hint">For Google Workspace calendars whose secret iCal address is turned off. Create an OAuth client of type <b>Desktop app</b> in your own Google Cloud project (Google Calendar API enabled), paste its ID and secret, save, then <b>Connect</b>. Sign-in tokens stay on this computer.</p>
+        <label class="row"><input type="checkbox" id="gcalEnabled"> <span data-i18n="s.gcal.enabled">Show Google Calendar events</span></label>
+        <label class="row"><span data-i18n="s.gcal.clientId">Client ID</span> <input type="text" id="gcalClientId" spellcheck="false" placeholder="…apps.googleusercontent.com"></label>
+        <label class="row"><span data-i18n="s.gcal.clientSecret">Client secret</span> <input type="password" id="gcalClientSecret" spellcheck="false" autocomplete="off"></label>
+        <label class="row"><span data-i18n="s.gcal.ids">Calendars</span> <input type="text" id="gcalIds" spellcheck="false" placeholder="primary"></label>
+        <div class="cal-row">
+          <input type="text" id="gcalName" placeholder="Name, e.g. Work">
+          <input type="color" id="gcalColor" value="#60a5fa">
+        </div>
+        <p class="hint" id="gcalStatus"></p>
+        <button class="btn sm" id="gcalConnect" data-i18n="s.gcal.connect">Connect</button>
+        <button class="btn sm" id="gcalCheck" data-i18n="s.gcal.check">Check</button>
+        <button class="btn sm danger" id="gcalDisconnect" data-i18n="s.gcal.disconnect">Disconnect</button>
+      </div>
+
       <div class="card">
         <h3 data-i18n="s.photos.title">Photo frame</h3>
         <p class="hint" style="margin:0 0 12px" data-i18n="s.photos.hint">For the Photo frame widget: a folder of photos on this computer. A synced OneDrive, Dropbox or iCloud folder works too; photos that are only in the cloud are skipped. Large photos are scaled down here before they go to the phone, and the path stays on this computer.</p>
@@ -2206,6 +2223,38 @@ $('cameraAdd').onclick = () => {
   cfg.cameras.sources.push({ id: cameraId(), name: '', url: '', transport: 'tcp', fps: 5 });
   renderCameras(); changed();
 };
+// ---------------------------------------------------------------- Google Calendar (OAuth)
+function renderGoogleCalendar() {
+  const g = (cfg.googleCalendar ??= { enabled: false, clientId: '', clientSecret: '', calendarIds: ['primary'], name: 'Google', color: '#60a5fa' });
+  const bind = (id, get, set, ev = 'input') => { const el = $(id); get(el); el['on' + ev] = () => { set(el); changed(); }; };
+  bind('gcalEnabled', (el) => { el.checked = !!g.enabled; }, (el) => { g.enabled = el.checked; }, 'change');
+  bind('gcalClientId', (el) => { el.value = g.clientId || ''; }, (el) => { g.clientId = el.value.trim(); });
+  bind('gcalClientSecret', (el) => { el.value = g.clientSecret || ''; }, (el) => { g.clientSecret = el.value.trim(); });
+  bind('gcalIds', (el) => { el.value = (g.calendarIds || ['primary']).join(', '); },
+    (el) => { g.calendarIds = el.value.split(',').map((x) => x.trim()).filter(Boolean); });
+  bind('gcalName', (el) => { el.value = g.name || ''; }, (el) => { g.name = el.value; });
+  bind('gcalColor', (el) => { el.value = g.color || '#60a5fa'; }, (el) => { g.color = el.value; });
+  googleCalendarStatus();
+}
+async function googleCalendarStatus() {
+  try {
+    const j = await (await fetch('/api/google-calendar/state')).json();
+    $('gcalStatus').textContent = j.connected ? t('s.gcal.connected') : (j.error || t('s.gcal.notConnected'));
+  } catch (_) { $('gcalStatus').textContent = ''; }
+}
+$('gcalConnect').onclick = async () => {
+  if (!await save()) return;
+  const r = await fetch('/api/google-calendar/connect');
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) { toast(j.error || t('s.couldNotSave'), true); return; }
+  // a link, not window.open: after the awaits above the browser would treat a new window as a pop-up
+  $('gcalStatus').replaceChildren(h('a', { href: j.url, target: '_blank', rel: 'noopener' }, t('s.gcal.signIn')), ' — ', t('s.gcal.finishInBrowser'));
+};
+$('gcalCheck').onclick = googleCalendarStatus;
+$('gcalDisconnect').onclick = async () => {
+  await fetch('/api/google-calendar/disconnect', { method: 'POST' });
+  googleCalendarStatus();
+};
 $('calAdd').onclick = () => {
   cfg.calendars ??= [];
   cfg.calendars.push({ name: '', url: '', color: CAL_COLORS[cfg.calendars.length % CAL_COLORS.length] });
@@ -3219,7 +3268,7 @@ async function load() {
   // in English that has display.language = "vi" would otherwise render every editor in English and never rebuild them
   if (window.PhoneBoxI18n) applyLanguageUi(cfg.display?.language || 'auto');
   else localizeCatalog();
-  renderPages(); renderDeck(); renderRules(); renderCalendars(); renderFeeds(); renderCameras(); renderConsole(); renderNetAdapters(); renderCharge(); bindForm();
+  renderPages(); renderDeck(); renderRules(); renderCalendars(); renderGoogleCalendar(); renderFeeds(); renderCameras(); renderConsole(); renderNetAdapters(); renderCharge(); bindForm();
   // the editors fill in the sections and fields they own (feeds, cameras, an action's "enabled", ...), so the
   // baseline is taken after they ran: otherwise a freshly loaded page already counts as unsaved, and Revert can never
   // get back to a clean state
@@ -3258,7 +3307,7 @@ async function doSave() {
 }
 
 $('save').onclick = save;
-$('revert').onclick = () => { cfg = JSON.parse(saved); renderPages(); renderDeck(); renderRules(); renderCalendars(); renderFeeds(); renderCameras(); renderConsole(); renderNetAdapters(); renderPhones(); renderCharge(); bindForm(); changed(); };
+$('revert').onclick = () => { cfg = JSON.parse(saved); renderPages(); renderDeck(); renderRules(); renderCalendars(); renderGoogleCalendar(); renderFeeds(); renderCameras(); renderConsole(); renderNetAdapters(); renderPhones(); renderCharge(); bindForm(); changed(); };
 // Over USB this also wakes the phone and brings the panel to the front (adb); over Wi-Fi the phone switches to the
 // page selected in the editor through the live stream.
 $('openPhone').onclick = async () => {
@@ -3357,7 +3406,7 @@ $('applyJson').onclick = () => {
     cfg = c;
     fillDefaults();
     $('jsonErr').textContent = '';
-    renderPages(); renderDeck(); renderRules(); renderCalendars(); renderFeeds(); renderCameras(); renderConsole(); renderNetAdapters(); renderPhones(); renderCharge(); bindForm(); changed(); toast(t('s.jsonLoaded'));
+    renderPages(); renderDeck(); renderRules(); renderCalendars(); renderGoogleCalendar(); renderFeeds(); renderCameras(); renderConsole(); renderNetAdapters(); renderPhones(); renderCharge(); bindForm(); changed(); toast(t('s.jsonLoaded'));
   }
   catch (e) { $('jsonErr').textContent = e.message; }
 };

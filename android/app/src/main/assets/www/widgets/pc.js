@@ -488,6 +488,152 @@ W.agenda = {
       const m = Math.round((ms - Date.now()) / 60000);
       return m < 1 ? t('time.now') : m < 60 ? t('time.inDur', { dur: t('time.min', { m }) }) : m < 24 * 60 ? t('time.inDur', { dur: fmtDur(ms - Date.now()) }) : '';
     };
+    // "Focus" layout, two tabs. Today: the meeting that is on (or the next one) large on the left, the rest of today
+    // large on the right. Week: seven day columns from today. A tap on a tab switches; after a minute it goes back to Today.
+    let tab = 'today', tabAt = 0;
+    const setTab = (v) => { tab = v; tabAt = Date.now(); lastKey = ''; render(); };
+    const tabs = () => h('div', 'agf-tabs',
+      ...[['today', t('time.today')], ['week', 'Неделя']].map(([v, label]) => {
+        const b = h('button', 'agf-tab' + (tab === v ? ' on' : ''), label);
+        b.addEventListener('click', (e) => { e.stopPropagation(); setTab(v); });
+        return b;
+      }));
+    const row = (e, cls) => {
+      const r = h('div', 'agf-row' + (cls ? ' ' + cls : ''), h('span', 'agf-rt', e.allDay ? '·' : hm(e.start)), h('span', 'agf-rn', e.title));
+      r.style.setProperty('--c', e.color);
+      return r;
+    };
+    // Today: the meeting that is on (or the next one) large on top, the working day as a horizontal timeline below.
+    // After the day is over the whole view moves to tomorrow. A tap on a block shows that meeting on top for a minute.
+    let pinned = null, pinnedAt = 0;
+    const pick = (e) => { pinned = e; pinnedAt = Date.now(); haptic?.(); lastKey = ''; render(); };
+    const DAY_FROM = 9, DAY_TO = 19;
+    const renderToday = (_list, _cur, _next, now, all) => {
+      const base = new Date(now);
+      const dayStart = (offset) => new Date(base.getFullYear(), base.getMonth(), base.getDate() + offset).getTime();
+      const onDay = (d0) => all.filter((e) => e.start < d0 + 864e5 && e.end > d0);
+      // after 19:00, or after the last meeting if it ends later, show tomorrow
+      const todays = onDay(dayStart(0)).filter((e) => !e.allDay);
+      const lastEnd = Math.max(dayStart(0) + DAY_TO * 36e5, ...todays.map((e) => e.end));
+      const off = now >= lastEnd ? 1 : 0;
+      const d0 = dayStart(off);
+      const events = onDay(d0);
+      const timed = events.filter((e) => !e.allDay).sort((x, y) => x.start - y.start);
+      const allDay = events.filter((e) => e.allDay);
+      // hour range: 9–19, widened to whole hours around meetings outside it
+      let h0 = DAY_FROM, h1 = DAY_TO;
+      for (const e of timed) {
+        h0 = Math.min(h0, Math.max(0, Math.floor((Math.max(e.start, d0) - d0) / 36e5)));
+        h1 = Math.max(h1, Math.min(24, Math.ceil((Math.min(e.end, d0 + 864e5) - d0) / 36e5)));
+      }
+      const t0 = d0 + h0 * 36e5, span = (h1 - h0) * 36e5;
+      const x = (ms) => Math.max(0, Math.min(1, (ms - t0) / span)) * 100;
+
+      // the calendar is fetched again every few minutes as new objects: find the pinned meeting by start and title
+      if (pinned) pinned = now - pinnedAt > 60000 ? null : timed.find((e) => e.start === pinned.start && e.title === pinned.title) || null;
+      const cur = off === 0 ? timed.find((e) => e.start <= now && e.end > now) : null;
+      const next = timed.find((e) => e.start > now);
+      const hero = pinned || cur || next;
+
+      // top: the meeting
+      const top = h('div', 'agt-hero');
+      if (hero) {
+        top.style.setProperty('--c', hero.color);
+        const left = hero.end - now;
+        const label = hero === cur ? `Идёт · ещё ${left < 36e5 ? t('time.min', { m: Math.max(1, Math.round(left / 6e4)) }) : fmtDur(left)}`
+          : hero.start > now ? (off === 0 ? inMin(hero.start) : `${dayName(hero.start)}`) : 'Прошла';
+        // a meeting picked by a tap says so, and that it goes back by itself
+        const lab = h('div', 'agt-label', label);
+        if (pinned && hero === pinned && hero !== cur && hero !== next) lab.prepend(h('span', 'agt-pin', 'Выбрано · '));
+        top.append(lab, h('div', 'agt-title', hero.title),
+          h('div', 'agt-meta', `${hm(hero.start)}–${hm(hero.end)}` + (o.location !== false && hero.location ? ` · ${hero.location}` : '')));
+      } else {
+        const later = all.filter((e) => e.start >= d0 + 864e5).sort((p, q) => p.start - q.start)[0];
+        top.append(h('div', 'agt-label', off ? 'Завтра' : t('time.today')), h('div', 'agt-title', off ? 'Встреч нет' : 'На сегодня всё'),
+          later ? h('div', 'agt-meta', `Дальше: ${dayName(later.start)}, ${hm(later.start)} — ${later.title}`) : '');
+      }
+
+      // all-day strip
+      const strip = h('div', 'agt-allday', ...allDay.map((e) => { const s = h('div', 'agt-ad', e.title); s.style.setProperty('--c', e.color); return s; }));
+
+      // lanes: each meeting takes the first lane that is free at its start
+      const lanes = [];
+      const laneOf = new Map();
+      for (const e of timed) {
+        let i = lanes.findIndex((end) => end <= e.start);
+        if (i < 0) { i = lanes.length; lanes.push(0); }
+        lanes[i] = e.end;
+        laneOf.set(e, i);
+      }
+      const n = Math.max(1, lanes.length);
+      const track = h('div', 'agt-track');
+      const grid = h('div', 'agt-grid');
+      for (let hh = h0; hh < h1; hh++) grid.append(h('div', 'agt-hr'));
+      track.append(grid);
+      for (const e of timed) {
+        const l = x(e.start), w = Math.max(0.8, x(e.end) - l), lane = laneOf.get(e);
+        const state = (e.end <= now ? ' past' : e === cur ? ' now' : e === next ? ' next' : '') + (pinned && e === hero && e !== cur && e !== next ? ' sel' : '');
+        const b = h('div', 'agt-ev' + state, h('span', 'agt-evn', e.title));
+        b.style.cssText = `left:${l}%;width:${w}%;top:${(lane / n) * 100}%;height:calc(${100 / n}% - ${n > 1 ? 3 : 0}px)`;
+        b.style.setProperty('--c', e.color);
+        if (e === cur) b.style.setProperty('--p', Math.min(1, (now - e.start) / Math.max(1, e.end - e.start)));
+        b.addEventListener('click', (ev) => { ev.stopPropagation(); pick(e); });
+        track.append(b);
+      }
+      // a short meeting is a narrow target: a tap anywhere on the timeline picks the meeting nearest to that time
+      track.addEventListener('click', (ev) => {
+        if (!timed.length) return;
+        const r = track.getBoundingClientRect();
+        const at = t0 + ((ev.clientX - r.left) / Math.max(1, r.width)) * span;
+        const dist = (e) => (at < e.start ? e.start - at : at > e.end ? at - e.end : 0);
+        pick(timed.reduce((a, e) => (dist(e) < dist(a) ? e : a)));
+      });
+      if (off === 0 && now >= t0 && now <= t0 + span) { const nl = h('div', 'agt-now', h('i')); nl.style.left = `${x(now)}%`; track.append(nl); }
+      const hours = h('div', 'agt-hours');
+      for (let hh = h0; hh <= h1; hh++) { const s = h('span', null, String(hh)); s.style.left = `${((hh - h0) / (h1 - h0)) * 100}%`; hours.append(s); }
+
+      const title = off ? 'Завтра · ' + new Date(d0).toLocaleDateString(LOCALE, { weekday: 'long', day: 'numeric', month: 'long' })
+        : new Date(now).toLocaleDateString(LOCALE, { weekday: 'long', day: 'numeric', month: 'long' });
+      box.replaceChildren(h('div', 'agf-head', h('div', 'agf-date', title), tabs()), top, allDay.length ? strip : '', h('div', 'agt-tl', track, hours));
+    };
+    const renderWeek = (all, now) => {
+      const base = new Date(now);
+      const cols = [];
+      for (let i = 0; i < 7; i++) {
+        const d0 = new Date(base.getFullYear(), base.getMonth(), base.getDate() + i).getTime();
+        const d1 = new Date(base.getFullYear(), base.getMonth(), base.getDate() + i + 1).getTime();
+        const evs = all.filter((e) => e.start < d1 && e.end > d0 && (i > 0 || e.end > now));
+        const d = new Date(d0);
+        const wkend = d.getDay() === 0 || d.getDay() === 6;
+        const col = h('div', 'agw-col' + (i === 0 ? ' today' : '') + (wkend ? ' wkend' : '') + (evs.length ? '' : ' empty'),
+          h('div', 'agw-dh', h('span', 'agw-wd', d.toLocaleDateString(LOCALE, { weekday: 'short' })), h('span', 'agw-dn', String(d.getDate()))),
+          h('div', 'agw-evs', ...evs.map((e) => {
+            const c = h('div', 'agw-ev', h('div', 'agw-t', e.allDay ? 'весь день' : hm(e.start)), h('div', 'agw-n', e.title));
+            c.style.setProperty('--c', e.color);
+            return c;
+          })),
+          h('div', 'agw-more'));
+        cols.push(col);
+      }
+      // days without meetings get a narrow column, so busy days have room for whole words
+      const grid = h('div', 'agw-grid', ...cols);
+      grid.lang = (LOCALE || 'ru').split('-')[0];
+      grid.style.setProperty('--cols', cols.map((c) => c.classList.contains('empty') ? 'minmax(0, .55fr)' : 'minmax(0, 1fr)').join(' '));
+      box.replaceChildren(h('div', 'agf-head', h('div', 'agf-date', 'Неделя'), tabs()), grid);
+      for (const col of cols) {
+        const evs = col.querySelector('.agw-evs');
+        let hidden = 0;
+        while (evs.scrollHeight > evs.clientHeight + 2 && evs.childElementCount > 0) { evs.lastElementChild.remove(); hidden++; }
+        if (hidden) col.querySelector('.agw-more').textContent = `+${hidden}`;
+      }
+    };
+    const renderFocus = (list, cur, next, now, all) => {
+      if (tab !== 'today' && now - tabAt > 60000) tab = 'today';
+      box.classList.add('focus');
+      if (tab === 'week') renderWeek(all, now); else renderToday(list, cur, next, now, all);
+    };
+    const weekAll = (cal, now) => { const b = new Date(now); const end = new Date(b.getFullYear(), b.getMonth(), b.getDate() + 7).getTime();
+      return (cal?.events || []).filter((e) => e.end > now - 864e5 && e.start < end && (!only.length || only.includes(e.calendar.toLowerCase()))); };
     const render = () => {
       const cal = D.calendar;
       const now = Date.now();
@@ -498,7 +644,7 @@ W.agenda = {
       const until = new Date(today.getFullYear(), today.getMonth(), today.getDate() + wholeDays).getTime() + (days - wholeDays) * 864e5;
       const list = (cal?.events || []).filter((e) => e.end > now && e.start < until && (!only.length || only.includes(e.calendar.toLowerCase())));
       const small = box.clientHeight < 110;
-      const key = JSON.stringify([list.map((e) => e.start + e.title), Math.floor(now / 30000), small, box.clientHeight]);
+      const key = JSON.stringify([list.map((e) => e.start + e.title), Math.floor(now / 30000), small, box.clientHeight, tab]);
       if (key === lastKey) return;
       lastKey = key;
       box.classList.toggle('small', small);
@@ -507,6 +653,7 @@ W.agenda = {
       const timed = list.filter((e) => !e.allDay);
       const cur = timed.find((e) => e.start <= now);
       const next = timed.find((e) => e.start > now);
+      if (!small && o.style === 'focus') { renderFocus(list, cur, next, now, weekAll(cal, now)); return; }
       if (small) {
         const e = cur || next || list[0];
         if (!e) { box.replaceChildren(h('div', 'ag-big-t', 'No events'), h('div', 'ag-big-s', `next ${days} days`)); return; }
